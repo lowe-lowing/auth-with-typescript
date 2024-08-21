@@ -1,11 +1,7 @@
 // express server
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type User } from "@prisma/client";
 import cookieParser from "cookie-parser";
-import express, {
-  type NextFunction,
-  type Request,
-  type Response,
-} from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import { body, validationResult } from "express-validator";
 import * as jwt from "jsonwebtoken";
 
@@ -29,48 +25,38 @@ const validateUser = [
     .withMessage("Password must be at least 6 characters long"),
 ];
 
-function authMiddleware(
-  request: Request,
-  response: Response,
-  next: NextFunction
-) {
+const authMiddleware = async (request: Request, response: Response, next: NextFunction) => {
   const cookies = request.cookies;
   if (cookies && cookies.Authorization) {
     const secret = "qwe";
     try {
-      const verificationResponse = jwt.verify(cookies.Authorization, secret);
-      console.log(verificationResponse);
-      next();
-
-      // const id = verificationResponse._id;
-      // const user = await userModel.findById(id);
-      // if (user) {
-      //   request.user = user;
-      //   next();
-      // } else {
-      //   next(new WrongAuthenticationTokenException());
-      // }
+      const verificationResponse = jwt.verify(cookies.Authorization, secret) as User;
+      const id = verificationResponse.id;
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (user) {
+        // request.user = user;
+        next();
+      } else {
+        response.status(403).json({ message: "Authentication token is invalid, no user found" });
+      }
     } catch (error) {
-      next(new Error("Invalid token"));
+      response.status(403).json({ message: "Authentication token is invalid, something went wrong" });
     }
   } else {
     response.status(403).json({ message: "Authentication token missing" });
-    // next(new Error("Authentication token missing"));
   }
-}
+};
 
-// app.use(authMiddleware);
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body;
+  const user = await prisma.user.findUnique({
+    where: { username, password },
+  });
 
-app.post("/login", (req, res) => {
-  const token = jwt.sign(
-    {
-      _id: req.body.id,
-    },
-    "qwe",
-    {
-      expiresIn: "1h",
-    }
-  );
+  if (!user) {
+    return res.status(401).send("Invalid credentials");
+  }
+  const token = jwt.sign(user, "qwe", { expiresIn: "1h" });
   res.cookie("Authorization", token, {
     maxAge: 900000,
     httpOnly: true,
@@ -78,16 +64,26 @@ app.post("/login", (req, res) => {
   res.send("Logged in");
 });
 
-app.get("/test", authMiddleware, (req, res) => {
-  res.send("auth works");
+app.get("/logout", (req, res) => {
+  res.clearCookie("Authorization");
+  res.send("Logged out");
 });
 
-app.get("/users", async (req, res) => {
+app.get("/me", authMiddleware, async (req, res) => {
+  const cookies = req.cookies;
+  if (cookies && cookies.Authorization) {
+    const secret = "qwe";
+    const { username, email } = jwt.verify(cookies.Authorization, secret) as User;
+    res.send({ username, email });
+  }
+});
+
+app.get("/users", authMiddleware, async (req, res) => {
   const users = await prisma.user.findMany();
   res.send(users);
 });
 
-app.post("/users", validateUser, async (req: Request, res: Response) => {
+app.post("/users", authMiddleware, validateUser, async (req: Request, res: Response) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ errors: errors.array() });
@@ -106,7 +102,7 @@ app.put("/", (req, res) => {
   res.send("PUT request to the homepage");
 });
 
-app.delete("/users/:id", async (req, res) => {
+app.delete("/users/:id", authMiddleware, async (req, res) => {
   await prisma.user.delete({
     where: { id: parseInt(req.params.id) },
   });
